@@ -68,8 +68,8 @@ describe("filterRows", () => {
         passed: false,
       },
       first_anomaly: {
-        row_index: 2,
-        slot: 3,
+        row_index: 1,
+        slot: 2,
         scan_index: null,
         status: "missing",
         expected_mark: "B",
@@ -77,14 +77,14 @@ describe("filterRows", () => {
       },
       rows: [
         { slot: 1, scan_index: 1, expected_mark: "A", actual_mark: "A", status: "match" },
-        { slot: 2, scan_index: 2, expected_mark: "B", actual_mark: "B", status: "match" },
-        { slot: 3, scan_index: null, expected_mark: "B", actual_mark: null, status: "missing" },
+        { slot: 2, scan_index: null, expected_mark: "B", actual_mark: null, status: "missing" },
+        { slot: 3, scan_index: 2, expected_mark: "B", actual_mark: "B", status: "match" },
         { slot: 4, scan_index: 3, expected_mark: "D", actual_mark: "D", status: "match" },
       ],
     };
     const anomalies = filterRows(report.rows, "anomaly");
     expect(anomalies).toHaveLength(1);
-    expect(anomalies[0]).toMatchObject({ slot: 3, status: "missing", expected_mark: "B" });
+    expect(anomalies[0]).toMatchObject({ slot: 2, status: "missing", expected_mark: "B" });
     expect(STATUS_LABEL.missing).toBe("漏帖");
   });
 });

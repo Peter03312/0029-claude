@@ -47,6 +47,14 @@ def _decode_json(source: str, raw: bytes) -> Any:
             "invalid_json",
             f"JSON 解析失败（第 {exc.lineno} 行第 {exc.colno} 列）：{exc.msg}",
         ) from exc
+    except RecursionError as exc:
+        # 深度嵌套（约上千层）会在 json 的 C/纯 Python 解码器里耗尽递归栈。
+        # 这属于文件本身问题，必须归入对应导入区，而不是让请求 500。
+        raise ContractError(
+            source,
+            "nesting_too_deep",
+            "JSON 嵌套层数过深，无法解析（应为对象数组或字符串数组，请勿嵌套）",
+        ) from exc
 
 
 def parse_expected(raw: bytes) -> list[ExpectedItem]:

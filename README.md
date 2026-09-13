@@ -16,9 +16,9 @@
 ├── docker/verify-entrypoint.sh
 ├── backend/                # FastAPI：契约校验 + DP 对齐 + 报告
 │   ├── app/{contract,alignment,report,main}.py
-│   └── tests/              # Pytest（23 项，含四个验收场景）
+│   └── tests/              # Pytest（31 项，含四个验收场景）
 ├── frontend/               # React/TS：双列结果、首异常定位、筛选、报告下载
-│   └── src/（Vitest 12 项）
+│   └── src/（Vitest 14 项）
 └── examples/               # 期望清单 / 三种实扫 / 非法清单示例
 ```
 
@@ -91,17 +91,19 @@ cd frontend && npm install && npm run dev
 
 帖标按 **JSON 解码后的码点原样比较**，不做大小写折叠、空白修剪或 Unicode 规范化。例如全角 `Ａ`(U+FF21) ≠ `A`(U+0041)，预组合 `é`(U+00E9) ≠ 分解形式 `e`+U+0301。
 
-任一文件解析失败（非法 JSON / 非 UTF-8）或违约（结构、类型、空值、超量、slot 不对齐等）时：
+任一文件解析失败（非法 JSON / 非 UTF-8 / 嵌套层数过深）或违约（结构、类型、空值、超量、slot 不对齐等）时：
 
-* 错误显示在**对应导入区**（响应体带 `source: "expected" | "actual"` 与错误码）；
+* 错误显示在**对应导入区**（响应体带 `source: "expected" | "actual"` 与错误码；深嵌套返回 `nesting_too_deep`，同样归入对应导入区，不会变成通用请求失败）；
 * **整次拒绝**：不产生任何结果行，也没有报告与下载入口。
 
 ## 对齐语义
 
 编辑距离动态规划，插入（多帖）、删除（漏帖）、替换（错帖）代价均为 1：
 
-* **相同项必须匹配**（代价 0，不允许为了同成本而错位）；
-* 从末端构造 DP 表并自 `(0,0)` 回溯，遇同成本路径依次优先 **替换 → 缺失（漏帖）→ 额外（多帖）**，因此结果行完全确定、可复现；
+* **相同项必须匹配**（沿对角代价 0，且相同帖标绝不允许被当作替换）；
+* 采用标准前缀 DP（自左向右、自上而下填表），回溯**从表末端 `(n, m)` 开始**沿前驱回到 `(0, 0)`，逆序收集后翻转为自上而下的行序；
+* 回溯到同一格若多条路径代价相同，按规格依次优先 **替换 → 缺失（漏帖）→ 额外（多帖）**，因此结果行完全确定、可复现；
+* **重复标定位**：帖标段出现重复（期望清单里的重复 `mark`，或实扫重复扫入）时，末端回溯把相等匹配锚在重复段的**下边界**，多/漏的一份暴露在重复段**上边界**——即更靠近书芯上方的实际拆书位。重复段再长，首个异常也不会被推移到段的下端；
 * 每行含 `slot`（期望槽位，多帖行为 `null`）、`scan_index`（实扫序号，1 起，漏帖行为 `null`）、两侧帖标与 `status`（`match/replace/missing/extra`）。
 
 ### 报告 JSON
@@ -123,9 +125,10 @@ cd frontend && npm install && npm run dev
 | 场景 | 示例 | 期望结果 |
 | --- | --- | --- |
 | 完全一致 | `examples/actual-perfect.json` | `passed: true`，全部 match |
-| 漏帖（含重复标场景） | `examples/actual-missing.json` | 1 行 missing，首个异常精确定位槽位；重复标时重复项是否漏掉可被区分 |
+| 重复标漏帖 | `examples/expected-duplicate-mark.json` + `actual-duplicate-missing.json`（槽位 2、3 同为 B，实扫少一件 B） | 1 行 missing，首异常定位在重复段**上边界**槽位 2（而非槽位 3），拆书位不上移 |
+| 实扫重复多帖 | `examples/expected-abc.json` + `actual-duplicate-extra.json`（书芯上方多扫一件 A） | 1 行 extra，首异常为实扫第 1 件（重复段上边界），A 锚在实扫第 2 件 |
 | 同次错帖 + 末尾多帖 | `examples/actual-wrong-and-extra.json` | 1 行 replace + 1 行 extra，首异常为错帖行 |
-| 坏文件 / 违约 | `examples/expected-bad-slot.json` | 422，错误归入对应导入区，整单拒绝 |
+| 坏文件 / 违约 | `examples/expected-bad-slot.json`，或深嵌套 JSON | 422，错误归入对应导入区（深嵌套为 `nesting_too_deep`），整单拒绝 |
 
 后端：`backend/tests/test_alignment.py`（含与独立 Levenshtein 实现的交叉校验、随机确定性、码点原样比较）、`backend/tests/test_api.py`（端到端 + 违约矩阵）。
 前端：`frontend/src/App.test.tsx`（四个验收场景的页面行为、筛选、错误归属、报告下载）、`frontend/src/lib/report.test.ts`。

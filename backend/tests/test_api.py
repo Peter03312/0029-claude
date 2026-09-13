@@ -45,15 +45,33 @@ def test_acceptance_duplicate_mark_missing_signature(client):
     assert s["passed"] is False and s["edit_cost"] == 1
     assert s["match"] == 3 and s["missing"] == 1
     rows = report["rows"]
-    # 确定行：slot3 的重复 B 漏帖
-    assert [r["status"] for r in rows] == ["match", "match", "missing", "match"]
+    # 末端回溯：缺失的重复 B 暴露在重复段上边界（槽位 2），
+    # 避免首异常被压到槽位 3 导致拆书位置下移。
+    assert [r["status"] for r in rows] == ["match", "missing", "match", "match"]
     bad = report["first_anomaly"]
-    assert bad["row_index"] == 2 and bad["slot"] == 3
+    assert bad["row_index"] == 1 and bad["slot"] == 2
     assert bad["status"] == "missing" and bad["expected_mark"] == "B"
     assert bad["scan_index"] is None
+    # 保留下来的 B 锚在实扫第 2 件，对应槽位 3
+    assert rows[2]["slot"] == 3 and rows[2]["scan_index"] == 2
     # 可按异常筛选（前端逻辑同源：status != match）
     anomalies = [r for r in rows if r["status"] != "match"]
     assert len(anomalies) == 1
+
+
+def test_acceptance_actual_duplicate_extra_pinned_to_top(client):
+    # 实扫在上方重复扫入 A（A,B,C -> A,A,B,C）：
+    # 多帖必须定位到实扫第 1 件（重复段上边界），锚定的 A 在第 2 件。
+    resp = verify(client, expected_json(["A", "B", "C"]), ["A", "A", "B", "C"])
+    assert resp.status_code == 200
+    report = resp.json()["report"]
+    assert report["summary"]["edit_cost"] == 1 and report["summary"]["extra"] == 1
+    rows = report["rows"]
+    assert [r["status"] for r in rows] == ["extra", "match", "match", "match"]
+    first = report["first_anomaly"]
+    assert first["row_index"] == 0 and first["slot"] is None and first["scan_index"] == 1
+    assert rows[0]["actual_mark"] == "A"
+    assert rows[1]["slot"] == 1 and rows[1]["scan_index"] == 2
 
 
 def test_acceptance_wrong_signature_and_trailing_extra(client):
@@ -94,6 +112,39 @@ def test_non_utf8_is_rejected(client):
     assert resp.status_code == 422
     body = resp.json()
     assert body["source"] == "actual" and body["error"]["code"] == "not_utf8"
+
+
+def test_deeply_nested_actual_json_rejected_in_actual_panel(client):
+    # 嵌套约上千层会在 JSON 解码器里耗尽递归；这是实扫文件的问题，
+    # 必须在实扫导入区给出明确错误，而不是 500 通用失败。
+    depth = 1500
+    raw = b"[" * depth + b"]" * depth
+    resp = post_raw(client, "actual_file", "deep.json", raw)
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["source"] == "actual"
+    assert body["error"]["code"] == "nesting_too_deep"
+    assert "report" not in body
+
+
+def test_deeply_nested_expected_json_rejected_in_expected_panel(client):
+    depth = 1500
+    raw = b"[" * depth + b"]" * depth
+    resp = post_raw(client, "expected_file", "deep.json", raw)
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["source"] == "expected"
+    assert body["error"]["code"] == "nesting_too_deep"
+
+
+def test_deep_nesting_does_not_crash_process(client):
+    # 递归异常被捕获后，服务进程仍可正常处理后续请求
+    bad = b"[" * 1500 + b"]" * 1500
+    assert post_raw(client, "actual_file", "deep.json", bad).status_code == 422
+    ok = verify(client, expected_json(["A"]), ["A"])
+    assert ok.status_code == 200
+    assert ok.json()["report"]["summary"]["passed"] is True
 
 
 def test_expected_slot_gap_duplicate_out_of_range_rejected(client):

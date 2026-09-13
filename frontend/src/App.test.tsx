@@ -49,8 +49,8 @@ const duplicateMissingReport: Report = {
     passed: false,
   },
   first_anomaly: {
-    row_index: 2,
-    slot: 3,
+    row_index: 1,
+    slot: 2,
     scan_index: null,
     status: "missing",
     expected_mark: "B",
@@ -58,8 +58,8 @@ const duplicateMissingReport: Report = {
   },
   rows: [
     { slot: 1, scan_index: 1, expected_mark: "A", actual_mark: "A", status: "match" },
-    { slot: 2, scan_index: 2, expected_mark: "B", actual_mark: "B", status: "match" },
-    { slot: 3, scan_index: null, expected_mark: "B", actual_mark: null, status: "missing" },
+    { slot: 2, scan_index: null, expected_mark: "B", actual_mark: null, status: "missing" },
+    { slot: 3, scan_index: 2, expected_mark: "B", actual_mark: "B", status: "match" },
     { slot: 4, scan_index: 3, expected_mark: "D", actual_mark: "D", status: "match" },
   ],
 };
@@ -156,7 +156,7 @@ describe("配帖核验站页面", () => {
     expect(screen.queryByTestId("first-anomaly-banner")).not.toBeInTheDocument();
   });
 
-  it("验收2：重复标漏帖给出确定行，定位首个红色异常（槽位3），且可仅筛异常", async () => {
+  it("验收2：重复标漏帖把首个异常定位在重复段上边界（槽位2），且可仅筛异常", async () => {
     const user = userEvent.setup();
     fetchMock.mockResolvedValue({
       status: 200,
@@ -169,26 +169,32 @@ describe("配帖核验站页面", () => {
 
     expect(screen.getByTestId("verdict")).toHaveTextContent("核验不通过");
     const banner = screen.getByTestId("first-anomaly-banner");
-    expect(banner).toHaveTextContent("期望槽位 3");
+    // 末端回溯：多出/缺少的一份重复标暴露在重复段上边界（槽位 2），
+    // 而不是被压到槽位 3 造成拆书位置下移
+    expect(banner).toHaveTextContent("期望槽位 2");
     expect(banner).toHaveTextContent("漏帖");
 
     const firstRow = document.querySelector("tr[data-first-anomaly='true']") as HTMLElement;
     expect(firstRow).toBeTruthy();
-    expect(firstRow.dataset.rowIndex).toBe("2");
+    expect(firstRow.dataset.rowIndex).toBe("1");
     expect(firstRow.dataset.status).toBe("missing");
     expect(within(firstRow).getByText("漏帖")).toBeInTheDocument();
     // 挂载后自动滚动定位到首个异常行
     expect(scrollIntoViewMock).toHaveBeenCalled();
 
-    // 双列内容：左列期望槽位与帖标，右列实扫序号，漏帖行右列为空占位
-    expect(within(firstRow).getByText("3")).toBeInTheDocument();
+    // 双列内容：左列槽位 2 与期望标 B，漏帖行右列为空占位
+    expect(within(firstRow).getByText("2")).toBeInTheDocument();
     expect(within(firstRow).getByText("B")).toBeInTheDocument();
+    expect(within(firstRow).getAllByText("—").length).toBeGreaterThan(0);
+    // 锚定下边界：保留的 B 在槽位 3、实扫第 2 件
+    const anchoredRow = document.querySelector("tr[data-row-index='2']") as HTMLElement;
+    expect(within(anchoredRow).getByText("3")).toBeInTheDocument();
 
     // 异常筛选：仅异常
     await user.selectOptions(screen.getByTestId("status-filter"), "anomaly");
     expect(document.querySelectorAll("tbody tr")).toHaveLength(1);
     expect(screen.getByTestId("filter-count")).toHaveTextContent("显示 1 / 共 4 行");
-    expect(document.querySelector("tbody tr")?.getAttribute("data-row-index")).toBe("2");
+    expect(document.querySelector("tbody tr")?.getAttribute("data-row-index")).toBe("1");
 
     // 仅漏帖
     await user.selectOptions(screen.getByTestId("status-filter"), "missing");
@@ -291,6 +297,60 @@ describe("配帖核验站页面", () => {
       jsonFile("actual-fixed.json", ["甲", "乙", "丙"]),
     );
     expect(within(actualPanel).queryByRole("alert")).toBeNull();
+  });
+
+  it("实扫嵌套过深时错误归到实扫导入区（而非通用请求失败），且整单无结果", async () => {
+    const user = userEvent.setup();
+    fetchMock.mockResolvedValue({
+      status: 422,
+      json: async () => ({
+        ok: false,
+        source: "actual",
+        error: {
+          code: "nesting_too_deep",
+          message: "JSON 嵌套层数过深，无法解析（应为对象数组或字符串数组，请勿嵌套）",
+        },
+      }),
+    });
+
+    render(<App />);
+    // 上传一个深嵌套内容（真实文件就是一长串嵌套括号）
+    const deep = new File(["[".repeat(1500) + "]".repeat(1500)], "deep.json", {
+      type: "application/json",
+    });
+    await user.upload(
+      screen.getByTestId("expected-import-input"),
+      jsonFile("expected.json", expectedPayload(["A"])),
+    );
+    await user.upload(screen.getByTestId("actual-import-input"), deep);
+    await user.click(screen.getByTestId("verify-button"));
+
+    const actualPanel = screen.getByTestId("actual-import");
+    const panelError = within(actualPanel).getByTestId("actual-import-error");
+    expect(panelError).toHaveTextContent("nesting_too_deep");
+    expect(panelError).toHaveTextContent("嵌套层数过深");
+    // 不显示通用错误条
+    expect(screen.queryByTestId("global-error")).not.toBeInTheDocument();
+    // 整单拒绝：无结果与报告入口
+    expect(screen.queryByTestId("verdict")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("download-report")).not.toBeInTheDocument();
+  });
+
+  it("服务端返回 502 非 JSON 时显示通用请求失败而不崩溃", async () => {
+    const user = userEvent.setup();
+    fetchMock.mockResolvedValue({
+      status: 502,
+      json: async () => {
+        throw new SyntaxError("Unexpected token < in JSON at position 0");
+      },
+    });
+
+    render(<App />);
+    await uploadBoth(user, expectedPayload(["A"]), ["A"]);
+    await user.click(screen.getByTestId("verify-button"));
+
+    expect(screen.getByTestId("global-error")).toHaveTextContent("无法解析的响应");
+    expect(screen.queryByTestId("verdict")).not.toBeInTheDocument();
   });
 
   it("网络故障显示通用错误且不产生结果", async () => {
