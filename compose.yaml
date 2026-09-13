@@ -1,0 +1,38 @@
+# 锁线前配帖核验站 —— Docker Compose 联调
+#
+# 宿主端口可用环境变量覆盖：
+#   WEB_PORT=9090 docker compose up --build
+# 不设置时默认 8080。
+#
+# 一次性验收（Vitest + Pytest）：
+#   docker compose build verify && docker compose run --rm verify
+
+name: signature-verify
+
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: signature-backend
+    restart: unless-stopped
+    expose:
+      - "8000"
+
+  web:
+    build:
+      context: ./frontend
+    container_name: signature-web
+    depends_on:
+      - backend
+    restart: unless-stopped
+    ports:
+      # WEB_PORT 可覆盖宿主端口；容器内固定 80
+      - "${WEB_PORT:-8080}:80"
+
+  verify:
+    build:
+      context: .
+      dockerfile: Dockerfile.verify
+    container_name: signature-verify
+    # 一次性服务：跑 Vitest 与 Pytest，结束即退出，不发布端口、不常驻
+    restart: "no"

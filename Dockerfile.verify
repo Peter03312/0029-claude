@@ -1,0 +1,25 @@
+# 一次性验收镜像：Node 20 + Python 3.11 + nginx 仅用于语法参考。
+# 同时具备前端与后端工具链，verify 服务入口运行 Vitest 与 Pytest。
+FROM node:20-bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-pip python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work
+
+# 先装依赖以利用层缓存
+COPY frontend/package.json frontend/package-lock.json* ./frontend/
+RUN cd frontend && npm install --no-audit --no-fund
+
+COPY backend/requirements.txt ./backend/requirements.txt
+RUN python3 -m pip install --no-cache-dir --break-system-packages -r backend/requirements.txt
+
+# 再拷源码
+COPY frontend ./frontend
+COPY backend ./backend
+
+COPY docker/verify-entrypoint.sh /usr/local/bin/verify-entrypoint.sh
+RUN chmod +x /usr/local/bin/verify-entrypoint.sh
+
+CMD ["/usr/local/bin/verify-entrypoint.sh"]
